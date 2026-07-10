@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            zip-name: Strom-Windows.zip
+            pluginval-zip: pluginval_Windows.zip
+            pluginval-bin: ./pluginval.exe
+          - name: macOS
+            os: macos-latest
+            zip-name: Strom-macOS.zip
+            pluginval-zip: pluginval_macOS.zip
+            pluginval-bin: pluginval.app/Contents/MacOS/pluginval
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Validate with pluginval
+        shell: bash
+        run: |
+          curl -sLO https://github.com/Tracktion/pluginval/releases/latest/download/${{ matrix.pluginval-zip }}
+          cmake -E tar xf ${{ matrix.pluginval-zip }}
+          ${{ matrix.pluginval-bin }} --strictness-level 10 --timeout-ms 300000 --verbose \
+            --validate "build/Strom_artefacts/Release/VST3/Strom.vst3"
+
+      - name: Package VST3
+        shell: bash
+        working-directory: build/Strom_artefacts/Release/VST3
+        run: cmake -E tar cf "${{ github.workspace }}/${{ matrix.zip-name }}" --format=zip Strom.vst3
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strom-${{ matrix.name }}
+          path: ${{ matrix.zip-name }}
+
+      - name: Update rolling "latest" release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create latest --prerelease --title "Latest development build" \
+            --notes "Rolling build of main. Windows: unzip and copy Strom.vst3 into C:\\Program Files\\Common Files\\VST3, then rescan plugins in FL Studio." \
+            || true
+          gh release upload latest ${{ matrix.zip-name }} --clobber
